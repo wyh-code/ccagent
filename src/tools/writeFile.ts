@@ -2,6 +2,7 @@
 import { mkdir, writeFile as writeFileAsync } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
+import { TEXT_ENCODING } from "../config.js";
 import { safePath } from "../utils/safePath.js";
 
 export async function runWrite(args: Record<string, unknown>): Promise<string> {
@@ -10,8 +11,8 @@ export async function runWrite(args: Record<string, unknown>): Promise<string> {
   try {
     const filePath = safePath(path);
     await mkdir(dirname(filePath), { recursive: true });
-    await writeFileAsync(filePath, content, "utf-8");
-    return `已写入 ${Buffer.byteLength(content, "utf-8")} 字节到 ${path}`;
+    await writeFileAsync(filePath, content, TEXT_ENCODING);
+    return `已写入 ${Buffer.byteLength(content, TEXT_ENCODING)} 字节到 ${path}`;
   } catch (error) {
     return `错误：${error instanceof Error ? error.message : String(error)}`;
   }

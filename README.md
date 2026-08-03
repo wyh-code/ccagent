@@ -42,23 +42,27 @@ ccagent
 启动后进入交互式 REPL：输入问题回车发送，模型会按需调用工具在当前工作目录下完成任务并把结果回传，直到给出最终回答。输入 `q`、`exit` 或空行退出；`Ctrl+C`/`Ctrl+D` 同样会安全退出。
 
 ```
-s03：权限系统
+s04：Hooks — 扩展逻辑挂到钩子上，循环保持干净
 输入问题，回车发送。输入 q 退出。
 
-s03 >> 列出当前目录下的文件
-> bash
+s04 >> 列出当前目录下的文件
+[HOOK] UserPromptSubmit：注入工作目录 /path/to/workdir
+[HOOK] bash(["ls -la"])
 ...
 ```
 
-### 权限系统
+### 钩子系统
 
-工具执行前会依次经过三道门禁（`permission.ts`）：
+`agentLoop` 本身只负责"调用模型 → 执行工具 → 回写结果"这个主干流程，扩展逻辑都不写死在循环里，而是挂到 `hooks/` 目录下的四个事件上：
 
-1. **硬拒绝列表**：`bash` 命令命中 `rm -rf /`/`sudo`/`shutdown` 等关键字直接拦截，不询问
-2. **规则匹配**：`write_file`/`edit_file` 写到工作区外、`bash` 命令包含 `rm `/`chmod 777` 等疑似破坏性操作会命中规则
-3. **用户确认**：命中规则后暂停，在终端打印原因并等待输入 `y`/`N` 决定是否放行
+| 事件 | 时机 | 已注册的钩子 |
+| --- | --- | --- |
+| `UserPromptSubmit` | 用户输入送进模型之前 | `contextInjectHook`：把当前工作目录注入到 prompt 前面 |
+| `PreToolUse` | 工具真正执行之前 | `permissionHook`：硬拒绝列表 + 破坏性命令/越界写入需要用户 y/N 确认；`logHook`：打印一行调用日志 |
+| `PostToolUse` | 工具执行之后 | `largeOutputHook`：输出超过 10 万字符时打印告警 |
+| `Stop` | 模型不再调用工具、本轮即将结束时 | `summaryHook`：打印本轮一共用了几次工具 |
 
-三道门禁全部通过（或没有命中任何规则）才会真正执行工具。
+`PreToolUse` 钩子按注册顺序依次执行，只要有一个返回非空的拦截原因就立即短路——`permissionHook` 排在 `logHook` 前面，所以被拦截的调用不会留下日志。`Stop` 钩子如果返回非空字符串，会被当成一条新的用户消息追加进历史，让 `agentLoop` 继续跑下去而不是真正退出（当前注册的 `summaryHook` 只打印摘要、不会触发这个机制，但预留了这个扩展点）。
 
 ### 可用工具
 
@@ -100,13 +104,19 @@ ccagent/
 │   ├── repl.ts          # 交互式 REPL 循环
 │   ├── agent.ts         # agentLoop：核心 Agent 循环
 │   ├── config.ts        # 环境变量加载、OpenAI 客户端、常量
-│   ├── permission.ts    # 三道权限门禁：硬拒绝列表 + 规则匹配 + 用户确认
+│   ├── hooks/
+│   │   ├── index.ts             # 钩子注册表 + 四个 trigger 函数
+│   │   ├── contextInjectHook.ts # UserPromptSubmit：注入工作目录
+│   │   ├── permissionHook.ts    # PreToolUse：硬拒绝列表 + 破坏性操作确认
+│   │   ├── logHook.ts           # PreToolUse：调用日志
+│   │   ├── largeOutputHook.ts   # PostToolUse：大输出告警
+│   │   └── summaryHook.ts       # Stop：工具调用次数摘要
 │   ├── utils/
 │   │   ├── colors.ts    # 终端高亮小工具
 │   │   ├── safePath.ts  # 路径安全校验，拒绝跑出工作区的路径
 │   │   └── stdin.ts     # 全进程共享的 readline 接口
 │   └── tools/
-│       ├── bash.ts       # bash 工具：危险命令拦截、超时、输出截断
+│       ├── bash.ts       # bash 工具：超时、输出截断
 │       ├── readFile.ts   # read_file 工具
 │       ├── writeFile.ts  # write_file 工具
 │       ├── editFile.ts   # edit_file 工具

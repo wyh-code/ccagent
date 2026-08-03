@@ -17,6 +17,9 @@ function requireEnv(name: string): string {
 // 工作区目录：进程启动时的当前目录，所有相对路径都基于它解析
 export const WORKDIR = process.cwd();
 
+// 统一使用 UTF-8，读写文件和执行命令时都用它
+export const TEXT_ENCODING = "utf-8";
+
 // OpenAI 客户端实例，baseURL 为空时使用 SDK 默认地址
 export const openai = new OpenAI({
   apiKey: requireEnv("OPENAI_API_KEY"),
@@ -27,4 +30,4 @@ export const openai = new OpenAI({
 export const MODEL = requireEnv("MODEL_ID");
 
 // 系统提示词，告知模型自己所处的工作目录
-export const SYSTEM = `你是一个位于 ${WORKDIR} 的编程 Agent。所有破坏性操作需要用户批准。`;
+export const SYSTEM = `你是一个位于 ${WORKDIR} 的编程 Agent。使用工具完成任务。直接行动，不要解释。`;

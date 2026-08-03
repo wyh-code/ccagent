@@ -2,12 +2,9 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
-import { WORKDIR } from "../config.js";
+import { TEXT_ENCODING, WORKDIR } from "../config.js";
 
 const execAsync = promisify(exec);
-
-// 始终拦截的危险命令关键字
-const DANGEROUS_PATTERNS = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"];
 
 // 单条命令最长执行时间
 const TIMEOUT_MS = 120_000;
@@ -27,14 +24,11 @@ function formatOutput(stdout: string, stderr: string): string {
 export async function runBash(args: Record<string, unknown>): Promise<string> {
   const command = args.command as string;
 
-  if (DANGEROUS_PATTERNS.some((pattern) => command.includes(pattern))) {
-    return "错误：危险命令已被拦截";
-  }
-
   try {
-    // exec 默认按 UTF-8 解码输出，遇到非法字节会用替换字符处理
+    // 遇到非法字节会用替换字符处理，不会抛出解码异常
     const { stdout, stderr } = await execAsync(command, {
       cwd: WORKDIR,
+      encoding: TEXT_ENCODING,
       timeout: TIMEOUT_MS,
       maxBuffer: MAX_BUFFER_BYTES,
     });

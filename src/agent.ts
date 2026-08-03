@@ -17,15 +17,15 @@
 //                           (循环继续)
 //
 // 这就是核心循环：把工具执行结果回传给模型，直到模型决定停止。
-// 生产级 Agent 在此基础上叠加策略、钩子和生命周期控制。
+// 扩展逻辑（权限校验、日志、大输出告警、结束时的摘要）都不写死在这个循环里，
+// 而是挂到 hooks 模块暴露的几个事件上，循环本身保持干净。
 import type {
   ChatCompletionMessage,
   ChatCompletionMessageParam,
 } from "openai/resources/chat/completions";
 import { MODEL, SYSTEM, openai } from "./config.js";
-import { checkPermission } from "./permission.js";
+import { triggerPostToolUse, triggerPreToolUse, triggerStop } from "./hooks/index.js";
 import { TOOL_HANDLERS, TOOLS } from "./tools/index.js";
-import { cyan } from "./utils/colors.js";
 
 // SDK 返回的消息对象里，没有内容的字段会显式给 null（比如纯工具调用时 content/refusal
 // 都是 null），直接塞进历史后续请求会把这些 null 字段原样带上；这里把它们过滤掉，
@@ -52,25 +52,32 @@ export async function agentLoop(messages: ChatCompletionMessageParam[]): Promise
     messages.push(toHistoryMessage(assistant));
 
     if (!assistant.tool_calls) {
+      // Stop 钩子：返回非 null 就当成新的用户消息追加，循环继续；否则真正结束
+      const forced = await triggerStop(messages);
+      if (forced !== null) {
+        messages.push({ role: "user", content: forced });
+        continue;
+      }
       return;
     }
 
     for (const toolCall of assistant.tool_calls) {
       const name = toolCall.function.name;
       const args = JSON.parse(toolCall.function.arguments);
-      console.log(cyan(`> ${name}`));
 
-      if (!(await checkPermission(name, args))) {
+      const blocked = await triggerPreToolUse(name, args);
+      if (blocked !== null) {
         messages.push({
           role: "tool",
           tool_call_id: toolCall.id,
-          content: "权限被拒绝。",
+          content: blocked,
         });
         continue;
       }
 
       const handler = TOOL_HANDLERS[name];
       const output = handler ? await handler(args) : `未知工具：${name}`;
+      await triggerPostToolUse(name, args, output);
       console.log(output.slice(0, 200));
 
       messages.push({

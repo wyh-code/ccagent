@@ -1,6 +1,7 @@
 // tools/readFile.ts - read_file 工具：读取文件内容，可选限制返回行数
 import { readFile } from "node:fs/promises";
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
+import { TEXT_ENCODING } from "../config.js";
 import { safePath } from "../utils/safePath.js";
 
 // 按行拆分文本：统一识别 \r\n/\r/\n 三种换行符，且末尾的换行符不会产生多余的空行
@@ -17,7 +18,7 @@ export async function runRead(args: Record<string, unknown>): Promise<string> {
   const path = args.path as string;
   const limit = args.limit as number | undefined;
   try {
-    let lines = splitLines(await readFile(safePath(path), "utf-8"));
+    let lines = splitLines(await readFile(safePath(path), TEXT_ENCODING));
     if (limit && limit < lines.length) {
       lines = [...lines.slice(0, limit), `...（还有 ${lines.length - limit} 行）`];
     }
