@@ -15,3 +15,7 @@ export function red(text: string): string {
 export function gray(text: string): string {
   return `\x1b[90m${text}\x1b[0m`;
 }
+
+export function green(text: string): string {
+  return `\x1b[32m${text}\x1b[0m`;
+}

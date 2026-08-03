@@ -29,5 +29,8 @@ export const openai = new OpenAI({
 // 对话使用的模型 ID
 export const MODEL = requireEnv("MODEL_ID");
 
-// 系统提示词，告知模型自己所处的工作目录
-export const SYSTEM = `你是一个位于 ${WORKDIR} 的编程 Agent。使用工具完成任务。直接行动，不要解释。`;
+// 系统提示词，告知模型自己所处的工作目录，并要求先规划再执行
+export const SYSTEM =
+  `你是一个位于 ${WORKDIR} 的编程 Agent。` +
+  "开始多步骤任务前，先用 todo_write 规划步骤；执行过程中及时更新状态。" +
+  "直接行动，不要解释。";

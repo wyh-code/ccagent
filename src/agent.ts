@@ -35,8 +35,20 @@ function toHistoryMessage(message: ChatCompletionMessage): ChatCompletionMessage
   return Object.fromEntries(entries) as ChatCompletionMessageParam;
 }
 
+// 距离上一次调用 todo_write 已经过去的轮数，达到阈值就催促模型更新任务列表
+let roundsSinceTodo = 0;
+const TODO_REMINDER_ROUNDS = 3;
+
 export async function agentLoop(messages: ChatCompletionMessageParam[]): Promise<void> {
   while (true) {
+    if (roundsSinceTodo >= TODO_REMINDER_ROUNDS && messages.length > 0) {
+      messages.push({
+        role: "user",
+        content: "<reminder>请更新你的 todo 列表。</reminder>",
+      });
+      roundsSinceTodo = 0;
+    }
+
     const response = await openai.chat.completions.create({
       model: MODEL,
       messages: [{ role: "system", content: SYSTEM }, ...messages],
@@ -61,6 +73,9 @@ export async function agentLoop(messages: ChatCompletionMessageParam[]): Promise
       return;
     }
 
+    // 本轮 assistant 发起了工具调用，计数器累加；调用 todo_write 会在下面重新清零
+    roundsSinceTodo += 1;
+
     for (const toolCall of assistant.tool_calls) {
       const name = toolCall.function.name;
       const args = JSON.parse(toolCall.function.arguments);
@@ -78,6 +93,9 @@ export async function agentLoop(messages: ChatCompletionMessageParam[]): Promise
       const handler = TOOL_HANDLERS[name];
       const output = handler ? await handler(args) : `未知工具：${name}`;
       await triggerPostToolUse(name, args, output);
+      if (name === "todo_write") {
+        roundsSinceTodo = 0;
+      }
       console.log(output.slice(0, 200));
 
       messages.push({

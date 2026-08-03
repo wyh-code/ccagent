@@ -1,6 +1,6 @@
 # ccagent
 
-一个基于 TypeScript 实现的命令行编程 agent 工具：通过 OpenAI function-calling 驱动 `bash`/`read_file`/`write_file`/`edit_file`/`glob` 五个工具，在交互式 REPL 中完成任务。
+一个基于 TypeScript 实现的命令行编程 agent 工具：通过 OpenAI function-calling 驱动 `bash`/`read_file`/`write_file`/`edit_file`/`glob`/`todo_write` 六个工具，在交互式 REPL 中完成任务。
 
 ## 环境要求
 
@@ -42,10 +42,10 @@ ccagent
 启动后进入交互式 REPL：输入问题回车发送，模型会按需调用工具在当前工作目录下完成任务并把结果回传，直到给出最终回答。输入 `q`、`exit` 或空行退出；`Ctrl+C`/`Ctrl+D` 同样会安全退出。
 
 ```
-s04：Hooks — 扩展逻辑挂到钩子上，循环保持干净
+s05：TodoWrite — 先规划再执行，忘了就催
 输入问题，回车发送。输入 q 退出。
 
-s04 >> 列出当前目录下的文件
+s05 >> 列出当前目录下的文件
 [HOOK] UserPromptSubmit：注入工作目录 /path/to/workdir
 [HOOK] bash(["ls -la"])
 ...
@@ -64,6 +64,10 @@ s04 >> 列出当前目录下的文件
 
 `PreToolUse` 钩子按注册顺序依次执行，只要有一个返回非空的拦截原因就立即短路——`permissionHook` 排在 `logHook` 前面，所以被拦截的调用不会留下日志。`Stop` 钩子如果返回非空字符串，会被当成一条新的用户消息追加进历史，让 `agentLoop` 继续跑下去而不是真正退出（当前注册的 `summaryHook` 只打印摘要、不会触发这个机制，但预留了这个扩展点）。
 
+### 任务规划（TodoWrite）
+
+`todo_write` 工具让模型维护一份当前会话的任务清单（内存态，不落盘），每次调用都会整体覆盖任务列表并按状态着色打印（等待中/处理中/已完成）。`agentLoop` 里有一个"距离上次更新任务列表已经过去几轮"的计数器：只要模型这一轮发起了工具调用，计数器就 +1；只要调用的是 `todo_write`，计数器清零。一旦计数达到 3 轮，下一轮开始前会往历史里插入一条 `<reminder>请更新你的 todo 列表。</reminder>` 的提醒消息，催促模型同步任务状态。
+
 ### 可用工具
 
 | 工具 | 说明 |
@@ -73,6 +77,7 @@ s04 >> 列出当前目录下的文件
 | `write_file` | 写入文件内容（自动创建父目录） |
 | `edit_file` | 在文件中精确替换一段文本（仅替换一次） |
 | `glob` | 按 glob 模式在工作区目录下查找文件 |
+| `todo_write` | 创建并管理当前会话的任务列表 |
 
 `read_file`/`write_file`/`edit_file`/`glob` 都会先做路径校验（`utils/safePath.ts`），拒绝任何解析后跑出工作区目录的路径。
 
@@ -121,6 +126,7 @@ ccagent/
 │       ├── writeFile.ts  # write_file 工具
 │       ├── editFile.ts   # edit_file 工具
 │       ├── glob.ts       # glob 工具
+│       ├── todoWrite.ts  # todo_write 工具：维护会话任务列表
 │       └── index.ts      # 工具注册表（TOOLS + TOOL_HANDLERS）
 ├── dist/           # 构建产物（不入库）
 ├── tsconfig.json   # TypeScript 编译配置
