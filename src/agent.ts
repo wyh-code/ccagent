@@ -48,9 +48,7 @@ export async function agentLoop(messages: ChatCompletionMessageParam[]): Promise
     for (const toolCall of assistant.tool_calls) {
       const name = toolCall.function.name;
       const args = JSON.parse(toolCall.function.arguments);
-      // 当前只注册了 bash 一个工具，直接按它的参数结构打印；后续新增工具时
-      // 这里要换成更通用的打印方式（比如打印工具名 + 参数对象）
-      console.log(yellow(`$ ${args.command ?? ""}`));
+      console.log(yellow(`> ${name}`));
 
       const handler = TOOL_HANDLERS[name];
       const output = handler ? await handler(args) : `未知工具：${name}`;

@@ -32,17 +32,18 @@
   "dependencies": {
     "commander": "^12.1.0",
     "dotenv": "^16.4.5",
+    "glob": "^13.0.6",
     "openai": "^4.68.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.14.0",
     "@types/node": "^22.9.0",
     "eslint": "^9.14.0",
+    "prettier": "^3.3.3",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "typescript-eslint": "^8.14.0",
-    "prettier": "^3.3.3",
     "vitest": "^2.1.4"
   }
 }

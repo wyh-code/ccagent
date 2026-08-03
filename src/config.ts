@@ -27,4 +27,4 @@ export const openai = new OpenAI({
 export const MODEL = requireEnv("MODEL_ID");
 
 // 系统提示词，告知模型自己所处的工作目录
-export const SYSTEM = `你是一个位于 ${WORKDIR} 的编程 Agent。使用 bash 完成任务。直接行动，不要解释。`;
+export const SYSTEM = `你是一个位于 ${WORKDIR} 的编程 Agent。使用工具完成任务。直接行动，不要解释。`;

@@ -32,6 +32,7 @@ export async function runBash(args: Record<string, unknown>): Promise<string> {
   }
 
   try {
+    // exec 默认按 UTF-8 解码输出，遇到非法字节会用替换字符处理
     const { stdout, stderr } = await execAsync(command, {
       cwd: WORKDIR,
       timeout: TIMEOUT_MS,
