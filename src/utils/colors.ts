@@ -7,3 +7,7 @@ export function cyan(text: string): string {
 export function yellow(text: string): string {
   return `\x1b[33m${text}\x1b[0m`;
 }
+
+export function red(text: string): string {
+  return `\x1b[31m${text}\x1b[0m`;
+}
