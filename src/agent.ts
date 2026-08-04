@@ -20,8 +20,9 @@
 // 扩展逻辑（权限校验、日志、大输出告警、结束时的摘要）都不写死在这个循环里，
 // 而是挂到 hooks 模块暴露的几个事件上，循环本身保持干净。
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
-import { MODEL, SYSTEM, openai } from "./config.js";
+import { MODEL, openai } from "./config.js";
 import { triggerPostToolUse, triggerPreToolUse, triggerStop } from "./hooks/index.js";
+import { SYSTEM } from "./systemPrompt.js";
 import { TOOL_HANDLERS, TOOLS } from "./tools/index.js";
 import { toHistoryMessage } from "./utils/history.js";
 

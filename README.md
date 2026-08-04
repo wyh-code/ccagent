@@ -1,6 +1,6 @@
 # ccagent
 
-一个基于 TypeScript 实现的命令行编程 agent 工具：通过 OpenAI function-calling 驱动 `bash`/`read_file`/`write_file`/`edit_file`/`glob`/`todo_write`/`task` 七个工具，在交互式 REPL 中完成任务，其中 `task` 可以派生出上下文隔离的子 Agent。
+一个基于 TypeScript 实现的命令行编程 agent 工具：通过 OpenAI function-calling 驱动 `bash`/`read_file`/`write_file`/`edit_file`/`glob`/`todo_write`/`task`/`load_skill` 八个工具，在交互式 REPL 中完成任务，其中 `task` 可以派生出上下文隔离的子 Agent，`load_skill` 支持按需加载技能说明文档。
 
 ## 环境要求
 
@@ -42,10 +42,10 @@ ccagent
 启动后进入交互式 REPL：输入问题回车发送，模型会按需调用工具在当前工作目录下完成任务并把结果回传，直到给出最终回答。输入 `q`、`exit` 或空行退出；`Ctrl+C`/`Ctrl+D` 同样会安全退出。
 
 ```
-s06：Subagent — 派生子 Agent，上下文隔离，仅返回摘要
+s07：Skill Loading — 目录在 SYSTEM，内容按需加载
 输入问题，回车发送。输入 q 退出。
 
-s06 >> 列出当前目录下的文件
+s07 >> 列出当前目录下的文件
 [HOOK] UserPromptSubmit：注入工作目录 /path/to/workdir
 [HOOK] bash(["ls -la"])
 ...
@@ -77,6 +77,23 @@ s06 >> 列出当前目录下的文件
 - 最多运行 30 轮，超过上限或没有明确结论时会退回一句兜底提示
 - 内部的工具调用仍然会触发全局 `PreToolUse`/`PostToolUse` 钩子（权限校验、日志等），只是不会触发 `UserPromptSubmit`/`Stop`
 
+### 技能加载（Skill Loading）
+
+启动时会扫描工作目录下的 `skills/` 子目录（`src/skills.ts`），把每个含 `SKILL.md` 的子目录注册成一个"技能"：优先取文件开头 YAML frontmatter 里的 `name`/`description` 字段，缺失时分别退回目录名和正文首行。这份"技能名 + 一行描述"的目录会被拼进 `SYSTEM` 提示词，模型每次对话都能看到、但只占很小的 token 开销；真正的完整内容只有模型主动调用 `load_skill(name)` 时才会通过工具结果注入进对话，实现"目录常驻、内容按需"的两级加载。`skills/` 目录不存在或没有任何技能时，目录会显示"（未找到技能）"，不影响其余功能正常使用。
+
+项目自带两个示例技能（`skills/code-review-checklist/`、`skills/history-entry/`），分别是提交前检查清单和 `HISTORY.md` 写法说明，可以直接体验 `load_skill` 的效果；新增技能只需在 `skills/` 下建一个子目录，放一个带 `---` frontmatter 的 `SKILL.md` 即可：
+
+```markdown
+---
+name: my-skill
+description: 一句话描述这个技能是做什么的
+---
+
+# 正文标题
+
+技能的完整说明内容，只有被 load_skill 加载时才会进入对话。
+```
+
 ### 可用工具
 
 | 工具 | 说明 |
@@ -88,6 +105,7 @@ s06 >> 列出当前目录下的文件
 | `glob` | 按 glob 模式在工作区目录下查找文件 |
 | `todo_write` | 创建并管理当前会话的任务列表 |
 | `task` | 派生一个子 Agent 处理复杂子任务，仅返回最终结论 |
+| `load_skill` | 按名称加载某个技能的完整 `SKILL.md` 内容 |
 
 `read_file`/`write_file`/`edit_file`/`glob` 都会先做路径校验（`utils/safePath.ts`），拒绝任何解析后跑出工作区目录的路径。
 
@@ -119,6 +137,8 @@ ccagent/
 │   ├── repl.ts          # 交互式 REPL 循环
 │   ├── agent.ts         # agentLoop：核心 Agent 循环
 │   ├── config.ts        # 环境变量加载、OpenAI 客户端、常量
+│   ├── systemPrompt.ts  # 拼装主 Agent 的 SYSTEM 提示词（含技能目录）
+│   ├── skills.ts        # 技能注册表：扫描 skills/ 目录、解析 frontmatter
 │   ├── hooks/
 │   │   ├── index.ts             # 钩子注册表 + 四个 trigger 函数
 │   │   ├── contextInjectHook.ts # UserPromptSubmit：注入工作目录
@@ -139,9 +159,13 @@ ccagent/
 │       ├── glob.ts       # glob 工具
 │       ├── todoWrite.ts  # todo_write 工具：维护会话任务列表
 │       ├── task.ts       # task 工具：派生子 Agent，独立消息历史
+│       ├── loadSkill.ts  # load_skill 工具：按名称加载完整技能内容
 │       ├── baseTools.ts  # 子 Agent 可用的基础工具集合（不含 todo_write/task）
 │       ├── types.ts      # 工具处理函数的公共类型
 │       └── index.ts      # 工具注册表（TOOLS + TOOL_HANDLERS）
+├── skills/                        # 技能目录，每个子目录一个 SKILL.md
+│   ├── code-review-checklist/     # 提交前检查清单
+│   └── history-entry/             # HISTORY.md 写法说明
 ├── dist/           # 构建产物（不入库）
 ├── tsconfig.json   # TypeScript 编译配置
 ├── tsup.config.ts  # 构建打包配置

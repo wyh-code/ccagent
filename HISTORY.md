@@ -95,3 +95,16 @@
   - 请使用 task 工具派生一个子 Agent，让它创建一个名为 sub_hello.txt 的文件，内容为 hello from subagent，然后读取确认内容（应该看到 `[子 Agent 已启动]`、子 Agent 内部的工具调用日志、`[子 Agent 完成]`，最后父级只拿到一段摘要文本，父级历史里不会出现子 Agent 内部逐条的工具调用消息）
   - 用 task 派生一个子 Agent 去数一下当前目录有多少个 .ts 文件，同时自己也创建一个 todo 列表规划这个任务（观察 todo_write 和 task 可以在同一轮对话里配合使用）
   - 让子 Agent 尝试执行 sudo apt update（应该看到子 Agent 内部的工具调用同样被硬拒绝列表拦截，说明子 Agent 也受同一套权限钩子约束）
+
+## 0.7.0
+
+### 新增 load_skill 工具与技能目录，实现两级按需知识注入
+
+- 变更摘要：工具从 7 个扩到 8 个：新增 `src/skills.ts`，进程启动时扫描工作目录下的 `skills/` 子目录，把每个含 `SKILL.md` 的子目录解析成一个技能（解析文件开头 `---` 包裹的 YAML frontmatter 取 `name`/`description`，缺失时分别退回目录名和正文首行去掉井号），登记进 `SKILL_REGISTRY`，并提供 `listSkills()` 汇总成"名称 + 一行描述"的目录文本；新增 `tools/loadSkill.ts` 实现 `load_skill` 工具，按名称从注册表取出对应技能的完整 `SKILL.md` 内容通过工具结果回传给模型，找不到时返回"未找到技能：xxx"。这样技能目录常驻在 `SYSTEM` 里（每个技能只占一行的 token 开销），完整内容只有模型主动调用 `load_skill` 才会被注入进对话，避免一开始就把所有技能的完整文档都塞进提示词。为了让 `SYSTEM` 能引用技能目录又不产生 `config.ts`/`skills.ts` 相互引用的循环依赖，把原来定义在 `config.ts` 里的 `SYSTEM` 常量拆到新文件 `src/systemPrompt.ts`（依赖顺序变成 `systemPrompt.ts → skills.ts → config.ts`，`config.ts` 本身不再依赖任何业务模块），提示词内容额外加上"可用技能"目录和"需要完整说明时使用 load_skill 加载"的指引，其余部分不变；`config.ts` 现在只保留 `SUB_SYSTEM`（子 Agent 不需要看到技能目录，用的还是原来的固定文案）。`tools/index.ts` 把 `load_skill` 加进 `TOOLS`/`TOOL_HANDLERS`。REPL 标题/提示符更新为 s07。另外新增两个示例技能目录 `skills/code-review-checklist/SKILL.md`（提交前要跑的检查清单：typecheck/lint/build/test/冷启动冒烟/依赖方向检查/README-HISTORY 同步）和 `skills/history-entry/SKILL.md`（如何按本项目约定写 `HISTORY.md` 条目），两者都是本项目实际会用到的说明文档而不是占位内容，方便验证 `SKILL_REGISTRY`/`load_skill` 的真实效果。
+- 验证步骤：
+  - 依次跑 `npm run typecheck`、`npm run lint`、`npm run build`，确认改动没有破坏类型/lint
+  - 用 `printf "q\n" | node dist/index.js` 模拟输入 q 直接退出，确认标题/提示符已更新为 s07，且立即退出、EOF 不挂起的行为不受影响
+- 试试这些 prompt：
+  - 你有哪些可用技能？请列出名称和描述，不要加载（应该不触发任何工具调用，直接从 SYSTEM 里的目录报出 `code-review-checklist` 和 `history-entry` 两个技能）
+  - 请使用 load_skill 加载 code-review-checklist，然后按里面的清单检查一下当前项目（应该看到 `[HOOK] load_skill(...)` 和 `[技能] 已加载 code-review-checklist` 两行日志，随后模型基于完整清单内容逐项检查）
+  - 请调用 load_skill 加载一个不存在的技能，名字随便起一个，然后把结果原样告诉我（应该看到工具返回"未找到技能：xxx"，不会报错崩溃）

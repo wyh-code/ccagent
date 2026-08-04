@@ -29,13 +29,6 @@ export const openai = new OpenAI({
 // 对话使用的模型 ID
 export const MODEL = requireEnv("MODEL_ID");
 
-// 系统提示词，告知模型自己所处的工作目录，并要求先规划再执行、复杂子问题派生子 Agent
-export const SYSTEM =
-  `你是一个位于 ${WORKDIR} 的编程 Agent。` +
-  "遇到复杂子问题时，使用 task 工具派生子 Agent。" +
-  "开始多步骤任务前，先用 todo_write 规划步骤。" +
-  "直接行动，不要解释。";
-
 // 子 Agent 独立的系统提示词：只负责完成分配到的任务并给出摘要，不能继续派生子 Agent
 export const SUB_SYSTEM =
   `你是一个位于 ${WORKDIR} 的编程 Agent。` +
