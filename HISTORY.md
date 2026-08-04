@@ -108,3 +108,20 @@
   - 你有哪些可用技能？请列出名称和描述，不要加载（应该不触发任何工具调用，直接从 SYSTEM 里的目录报出 `code-review-checklist` 和 `history-entry` 两个技能）
   - 请使用 load_skill 加载 code-review-checklist，然后按里面的清单检查一下当前项目（应该看到 `[HOOK] load_skill(...)` 和 `[技能] 已加载 code-review-checklist` 两行日志，随后模型基于完整清单内容逐项检查）
   - 请调用 load_skill 加载一个不存在的技能，名字随便起一个，然后把结果原样告诉我（应该看到工具返回"未找到技能：xxx"，不会报错崩溃）
+
+## 0.8.0
+
+### 新增四层上下文压缩管线与 compact 工具
+
+- 变更摘要：工具从 8 个扩到 9 个：新增 `src/compact.ts`，实现四层压缩管线（原则是先便宜后昂贵）——`toolResultBudget`（L1：工具结果总长度超 200,000 字符时，把最大的几条落盘到 `.task_outputs/tool-results/`，历史里只留路径 + 前 2000 字符预览）、`snipCompact`（L2：消息条数超过 50 条时只保留开头几条和结尾一段，中间替换成"[已裁剪 N 条消息]"提示）、`microCompact`（L3：超过 120 字符的较早工具结果——除最近 3 条外——替换成占位符）、`compactHistory`（L4：历史序列化后仍超过 50,000 字符时，先把完整历史落盘为 `.transcripts/` 下的 JSONL 转录备份，再请求模型生成一段摘要，用这条摘要消息整体替换掉原历史）；另有 `reactiveCompact`（应急：摘要 + 保留最近几条原始消息）和 `isContextTooLongError`（按关键词识别"上下文过长"类错误）。新增 `tools/compact.ts` 只放 `compact` 工具的 schema（`focus` 参数可选）——这个工具刻意不注册进 `TOOL_HANDLERS`，因为它需要能整体替换消息数组，不适合套用"返回字符串塞进 tool 消息"这套通用工具的模式；`agentLoop` 在打印 `> {name}` 之后、派发到 `TOOL_HANDLERS` 之前专门检查 `name === "compact"`，命中就直接调用 `compactHistory` 并跳出这一轮的工具循环。`agent.ts` 现在每次请求模型前都会依次跑 L1→L2→L3，序列化后仍超预算再触发 L4；用一个 `replaceContents()` 小工具把压缩结果写回调用方传入的同一个数组对象（不能直接重新赋值参数，那样只是换掉本地变量，调用方持有的数组引用不会跟着变）；请求模型这一步包了 try/catch，命中 `isContextTooLongError` 且应急重试次数（上限 1 次）没用完时，做一次 `reactiveCompact` 后 `continue` 重试，其余异常原样抛出（不会在 REPL 里被兜底，非上下文类的请求异常会直接让进程退出）。`args = JSON.parse(toolCall.function.arguments)` 在 `agent.ts` 和 `task.ts` 里都改成 `... || "{}"`，因为 `compact` 的参数全部可选，模型调用时可能传空字符串。`systemPrompt.ts` 的提示词文案追加了"上下文过长时可使用 compact 工具"这一句，`task`/`todo_write` 相关的原有指引保留不动。REPL 标题/提示符更新为 s08。`.gitignore` 新增 `.transcripts/`、`.task_outputs/`（运行期生成的目录，不入库）。
+- 重要设计判断（刻意没有照抄参考实现的这次改动）：这一课的教学示例代码相比上一阶段明显做了瘦身——`permission_hook` 只剩硬拒绝列表判断（丢了破坏性关键字确认、越界写入确认）、`Stop`/`summary_hook` 整个消失、`todo_write` 催促提醒计数器也没了，docstring 里只字未提要移除这些功能，看起来只是教学示例为突出"压缩"这一新知识点顺手做的减法。ccagent 是持续维护的项目，不应该跟着教学脚本的课时安排回退已经验证过的安全/摘要功能，所以这次只迁移了真正新增的压缩机制：`hooks/permissionHook.ts`（破坏性关键词确认 + 越界写入确认）、`hooks/index.ts`/`hooks/summaryHook.ts`（`Stop` 事件与工具调用次数摘要）、`agent.ts` 里的 `roundsSinceTodo` 催促计数器，全部原样保留，没有删除。
+- 额外发现并修复的问题：实测（用一个连续发起十几次工具调用的会话）发现参考实现里 `snip_compact`/`reactive_compact` 按下标做的朴素切片/取尾操作，在切点或截取范围刚好落在"一条带 `tool_calls` 的 assistant 消息"和"它对应的 `tool` 响应消息"中间时，会把两者拆开，产生一条没有配对响应的 `tool_calls`，下一次请求直接被 OpenAI 兼容接口拒绝（`400 ... insufficient tool messages following tool_calls`），整个进程崩溃退出——这不是极端边界情况，正常使用中模型一次发起十几个工具调用并不罕见。`src/compact.ts` 新增 `groupByToolCallBoundary()`（把"assistant(tool_calls) + 紧跟的 tool 响应"打包成一组，其余消息各自成组）和 `takeGroupsFromEnd()`（从末尾按组累加，整组保留不切断），`snipCompact` 和 `reactiveCompact` 都改成基于分组裁剪/截取，保证任何裁剪结果都不会把某次工具调用和它的响应拆开；代价是极端情况下（单个分组本身就超过预算）可能没法把消息数精确压到目标以内，但比让进程崩溃更安全。用一段合成的 60 条消息（30 组 assistant-tool_calls/tool 响应对）跑过 `snipCompact`，确认裁剪后所有分组边界完整；又用一次真实会话发起 30+ 次工具调用（远超 50 条消息阈值）验证不再崩溃。
+- 验证步骤：
+  - 依次跑 `npm run typecheck`、`npm run lint`、`npm run build`，确认改动没有破坏类型/lint
+  - 用 `printf "q\n" | node dist/index.js` 模拟输入 q 直接退出，确认标题/提示符已更新为 s08，且立即退出、EOF 不挂起的行为不受影响
+- 试试这些 prompt：
+  - 列出当前目录下的文件（正常路径回归，确认能看到 `> bash` 这一行青色提示，紧跟着 `[HOOK] bash(...)` 日志）
+  - 执行 sudo apt update（应该仍被硬拒绝列表直接拦截，不弹确认）；帮我删除当前目录下一个真实存在的临时文件（应该仍命中破坏性命令规则，暂停询问 y/N，这一点没有回退）
+  - 请直接调用 compact 工具，对当前对话历史做一次摘要压缩（应该看到 `> compact`、`[转录已保存: .transcripts/transcript_xxx.jsonl]`，随后模型基于摘要继续回答；可以用"读取 .transcripts 目录下最新的转录文件，告诉我里面有几行"验证转录文件确实写入了）
+  - 请使用 task 工具派生一个子 Agent，计算 23 加 19 等于多少（回归验证子 Agent 不受这次改动影响：不会经过压缩管线，也不会触发 compact）
+  - 让它连续执行十几条不同的 echo 命令（比如"依次执行 echo 1 到 echo 20，每条都告诉我结果"），确认消息数超过 50 后不会崩溃退出

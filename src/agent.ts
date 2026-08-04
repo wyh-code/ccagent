@@ -19,18 +19,48 @@
 // 这就是核心循环：把工具执行结果回传给模型，直到模型决定停止。
 // 扩展逻辑（权限校验、日志、大输出告警、结束时的摘要）都不写死在这个循环里，
 // 而是挂到 hooks 模块暴露的几个事件上，循环本身保持干净。
+// 每次请求模型前还会先跑一遍上下文压缩管线（compact.ts），把历史控制在预算内。
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import {
+  compactHistory,
+  estimateSize,
+  isContextTooLongError,
+  microCompact,
+  reactiveCompact,
+  snipCompact,
+  toolResultBudget,
+} from "./compact.js";
 import { MODEL, openai } from "./config.js";
 import { triggerPostToolUse, triggerPreToolUse, triggerStop } from "./hooks/index.js";
 import { SYSTEM } from "./systemPrompt.js";
 import { TOOL_HANDLERS, TOOLS } from "./tools/index.js";
+import { cyan } from "./utils/colors.js";
 import { toHistoryMessage } from "./utils/history.js";
+
+// 历史序列化后超过这个字符数就触发一次整段摘要
+const CONTEXT_LIMIT = 50_000;
+
+// 遇到"上下文过长"类请求异常时，最多做几次应急压缩重试
+const MAX_REACTIVE_RETRIES = 1;
 
 // 距离上一次调用 todo_write 已经过去的轮数，达到阈值就催促模型更新任务列表
 let roundsSinceTodo = 0;
 const TODO_REMINDER_ROUNDS = 3;
 
+// 把 next 的内容原地写回 target，保持 target 这个数组引用不变
+// （调用方持有的是同一个数组对象，直接整体重新赋值会丢失这层引用关系）
+function replaceContents(
+  target: ChatCompletionMessageParam[],
+  next: ChatCompletionMessageParam[]
+): void {
+  const items = [...next];
+  target.length = 0;
+  target.push(...items);
+}
+
 export async function agentLoop(messages: ChatCompletionMessageParam[]): Promise<void> {
+  let reactiveRetries = 0;
+
   while (true) {
     if (roundsSinceTodo >= TODO_REMINDER_ROUNDS && messages.length > 0) {
       messages.push({
@@ -40,12 +70,34 @@ export async function agentLoop(messages: ChatCompletionMessageParam[]): Promise
       roundsSinceTodo = 0;
     }
 
-    const response = await openai.chat.completions.create({
-      model: MODEL,
-      messages: [{ role: "system", content: SYSTEM }, ...messages],
-      tools: TOOLS,
-      max_tokens: 8000,
-    });
+    // 压缩管线：先便宜后昂贵——预算控制、裁剪、占位替换都不够时才整段摘要
+    replaceContents(messages, toolResultBudget(messages));
+    replaceContents(messages, snipCompact(messages));
+    replaceContents(messages, microCompact(messages));
+    if (estimateSize(messages) > CONTEXT_LIMIT) {
+      console.log("[自动压缩]");
+      replaceContents(messages, await compactHistory(messages));
+    }
+
+    let response;
+    try {
+      response = await openai.chat.completions.create({
+        model: MODEL,
+        messages: [{ role: "system", content: SYSTEM }, ...messages],
+        tools: TOOLS,
+        max_tokens: 8000,
+      });
+      reactiveRetries = 0;
+    } catch (error) {
+      // 请求本身报"上下文过长"时，压缩管线显然没压够，做一次应急摘要再重试
+      if (isContextTooLongError(error) && reactiveRetries < MAX_REACTIVE_RETRIES) {
+        console.log("[响应式压缩]");
+        replaceContents(messages, await reactiveCompact(messages));
+        reactiveRetries += 1;
+        continue;
+      }
+      throw error;
+    }
 
     const choice = response.choices[0];
     if (!choice) {
@@ -69,7 +121,15 @@ export async function agentLoop(messages: ChatCompletionMessageParam[]): Promise
 
     for (const toolCall of assistant.tool_calls) {
       const name = toolCall.function.name;
-      const args = JSON.parse(toolCall.function.arguments);
+      const args = JSON.parse(toolCall.function.arguments || "{}");
+      console.log(cyan(`> ${name}`));
+
+      // compact 没有注册在 TOOL_HANDLERS 里，直接在这里拦截处理：
+      // 摘要整段历史后跳出本轮循环，回到 while 顶部重新走一遍压缩管线再请求模型
+      if (name === "compact") {
+        replaceContents(messages, await compactHistory(messages));
+        break;
+      }
 
       const blocked = await triggerPreToolUse(name, args);
       if (blocked !== null) {

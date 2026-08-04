@@ -11,9 +11,10 @@ function buildSystem(): string {
     "需要完整说明时，使用 load_skill 加载。" +
     "遇到复杂子问题时，使用 task 工具派生子 Agent。" +
     "开始多步骤任务前，先用 todo_write 规划步骤。" +
+    "上下文过长时可使用 compact 工具。" +
     "直接行动，不要解释。"
   );
 }
 
-// 系统提示词，告知模型自己所处的工作目录、可用技能目录，以及规划/派生子 Agent 的指引
+// 系统提示词，告知模型自己所处的工作目录、可用技能目录，以及规划/派生子 Agent/压缩上下文的指引
 export const SYSTEM = buildSystem();

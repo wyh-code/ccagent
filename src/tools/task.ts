@@ -51,7 +51,7 @@ async function spawnSubagent(description: string): Promise<string> {
 
     for (const toolCall of assistant.tool_calls) {
       const name = toolCall.function.name;
-      const args = JSON.parse(toolCall.function.arguments);
+      const args = JSON.parse(toolCall.function.arguments || "{}");
 
       const blocked = await triggerPreToolUse(name, args);
       if (blocked !== null) {

@@ -1,6 +1,6 @@
 # ccagent
 
-一个基于 TypeScript 实现的命令行编程 agent 工具：通过 OpenAI function-calling 驱动 `bash`/`read_file`/`write_file`/`edit_file`/`glob`/`todo_write`/`task`/`load_skill` 八个工具，在交互式 REPL 中完成任务，其中 `task` 可以派生出上下文隔离的子 Agent，`load_skill` 支持按需加载技能说明文档。
+一个基于 TypeScript 实现的命令行编程 agent 工具：通过 OpenAI function-calling 驱动 `bash`/`read_file`/`write_file`/`edit_file`/`glob`/`todo_write`/`task`/`load_skill`/`compact` 九个工具，在交互式 REPL 中完成任务，其中 `task` 可以派生出上下文隔离的子 Agent，`load_skill` 支持按需加载技能说明文档，`compact` 用于在对话过长时主动压缩历史。
 
 ## 环境要求
 
@@ -42,11 +42,12 @@ ccagent
 启动后进入交互式 REPL：输入问题回车发送，模型会按需调用工具在当前工作目录下完成任务并把结果回传，直到给出最终回答。输入 `q`、`exit` 或空行退出；`Ctrl+C`/`Ctrl+D` 同样会安全退出。
 
 ```
-s07：Skill Loading — 目录在 SYSTEM，内容按需加载
+s08：Context Compact — 四层压缩管线
 输入问题，回车发送。输入 q 退出。
 
-s07 >> 列出当前目录下的文件
+s08 >> 列出当前目录下的文件
 [HOOK] UserPromptSubmit：注入工作目录 /path/to/workdir
+> bash
 [HOOK] bash(["ls -la"])
 ...
 ```
@@ -58,24 +59,40 @@ s07 >> 列出当前目录下的文件
 | 事件 | 时机 | 已注册的钩子 |
 | --- | --- | --- |
 | `UserPromptSubmit` | 用户输入送进模型之前 | `contextInjectHook`：把当前工作目录注入到 prompt 前面 |
-| `PreToolUse` | 工具真正执行之前 | `permissionHook`：硬拒绝列表 + 破坏性命令/越界写入需要用户 y/N 确认；`logHook`：打印一行调用日志 |
+| `PreToolUse` | 工具真正执行之前 | `permissionHook`：硬拒绝列表（如 `sudo`/`rm -rf /`）直接拦截；破坏性命令关键词（如 `rm `）/ 越界写入需要用户 y/N 确认；`logHook`：打印一行调用日志 |
 | `PostToolUse` | 工具执行之后 | `largeOutputHook`：输出超过 10 万字符时打印告警 |
 | `Stop` | 模型不再调用工具、本轮即将结束时 | `summaryHook`：打印本轮一共用了几次工具 |
 
-`PreToolUse` 钩子按注册顺序依次执行，只要有一个返回非空的拦截原因就立即短路——`permissionHook` 排在 `logHook` 前面，所以被拦截的调用不会留下日志。`Stop` 钩子如果返回非空字符串，会被当成一条新的用户消息追加进历史，让 `agentLoop` 继续跑下去而不是真正退出（当前注册的 `summaryHook` 只打印摘要、不会触发这个机制，但预留了这个扩展点）。
+`PreToolUse` 钩子按注册顺序依次执行，只要有一个返回非空的拦截原因就立即短路——`permissionHook` 排在 `logHook` 前面，所以被拦截的调用不会留下日志。`Stop` 钩子如果返回非空字符串，会被当成一条新的用户消息追加进历史，让 `agentLoop` 继续跑下去而不是真正退出。`compact` 工具的调用不经过 `PreToolUse`/`PostToolUse` 这两个钩子：`agentLoop` 在派发到 `TOOL_HANDLERS` 之前就会认出 `compact` 并直接触发整段历史压缩（见下文"上下文压缩"）。
 
 ### 任务规划（TodoWrite）
 
 `todo_write` 工具让模型维护一份当前会话的任务清单（内存态，不落盘），每次调用都会整体覆盖任务列表并按状态打印图标（等待中留空/处理中青色 ▸/已完成绿色 ✓）。`agentLoop` 里有一个"距离上次更新任务列表已经过去几轮"的计数器：只要模型这一轮发起了工具调用，计数器就 +1；只要调用的是 `todo_write`，计数器清零。一旦计数达到 3 轮，下一轮开始前会往历史里插入一条 `<reminder>请更新你的 todo 列表。</reminder>` 的提醒消息，催促模型同步任务状态。
 
+### 上下文压缩（Context Compact）
+
+每次请求模型前，`agentLoop` 都会先跑一遍压缩管线（`src/compact.ts`），按"先便宜后昂贵"的顺序处理消息历史：
+
+1. **L1 预算控制**（`toolResultBudget`）：所有工具结果总长度超过 200,000 字符时，优先把最大的几条落盘到 `.task_outputs/tool-results/`，历史里只留路径和前 2000 字符预览。
+2. **L2 裁剪**（`snipCompact`）：消息条数超过 50 条时，只保留开头几条和结尾一段，中间替换成一条"[已裁剪 N 条消息]"提示。裁剪按"一次工具调用 + 它的响应"分组进行，保证不会把某条待响应的 `tool_calls` 消息和它的结果从中间切断——这一点和参考实现的朴素按下标切片不同，是移植时额外加固的（后面"已知取舍"一节详细说明原因）。
+3. **L3 占位替换**（`microCompact`）：超过 120 字符的较早工具结果（最近 3 条之外）替换成"[较早的工具结果已压缩]"占位符。
+4. **L4 整段摘要**（`compactHistory`）：以上都不够、历史序列化后仍超过 50,000 字符时，把完整历史落盘为 `.transcripts/` 下的一份 JSONL 转录备份，再请求模型对全部历史生成一段摘要，用这一条摘要消息整体替换掉原有历史。
+
+模型也可以主动调用 `compact` 工具触发一次 L4 摘要，用来主动释放上下文空间。如果请求模型时 API 直接报"上下文过长"类错误（`isContextTooLongError` 识别常见的几种错误关键词），会额外做一次应急压缩（`reactiveCompact`：摘要 + 保留最近几条原始消息，同样按分组取，不切断工具调用边界）并重试一次，仍然失败则把异常继续抛出。
+
+#### 已知取舍
+
+- **只保留了"新增压缩机制"，没有跟进删掉已有的安全/摘要功能**：这一阶段的教学示例代码同时把 `permissionHook` 的破坏性命令确认、越界写入确认，以及 `Stop`/`summaryHook`、`todo_write` 催促提醒都简化掉了，只字未提这是本节要移除的内容——看起来只是教学示例为了突出"压缩"这一个新知识点做的减法。ccagent 是持续维护的项目，不会仅仅因为教学脚本在讲下一课时顺手做了简化，就跟着回退已经验证过的安全和摘要功能，所以这几处一仍其旧。
+- **`snipCompact`/`reactiveCompact` 做了分组感知加固**：按原始参考实现的朴素下标切片，在消息数刚好超过阈值、且切点落在某次工具调用和它的响应中间时，会产生一条没有对应工具结果的 `tool_calls`，下一次请求直接被 OpenAI 兼容接口拒绝（`400 ... insufficient tool messages following tool_calls`）——这在实测里用一个连续发起十几次工具调用的会话就能稳定复现，不是极端边界情况。按"工具调用 + 响应"分组后再裁剪/截取，避免了这个问题；代价是极端情况下（比如单次轮次里模型发起了几十个工具调用，一组就超过了预算）可能无法把消息数精确压到预算以内，但比直接崩溃更安全。
+
 ### 子 Agent（Subagent）
 
-`task` 工具用一份全新的消息历史派生出一个独立的子 Agent，实现上下文隔离：子 Agent 内部完整的工具调用过程（多轮模型请求、每一步的工具执行结果）都不会进入父级的对话历史，父级只拿到子 Agent最后给出的一段摘要文本作为这次 `task` 调用的结果。子 Agent：
+`task` 工具用一份全新的消息历史派生出一个独立的子 Agent，实现上下文隔离：子 Agent 内部完整的工具调用过程（多轮模型请求、每一步的工具执行结果）都不会进入父级的对话历史，父级只拿到子 Agent 最后给出的一段摘要文本作为这次 `task` 调用的结果。子 Agent：
 
-- 只能使用基础五个工具（`bash`/`read_file`/`write_file`/`edit_file`/`glob`，定义在 `tools/baseTools.ts`），不含 `todo_write` 和 `task` 本身，避免无限递归派生子 Agent
+- 只能使用基础五个工具（`bash`/`read_file`/`write_file`/`edit_file`/`glob`，定义在 `tools/baseTools.ts`），不含 `todo_write`/`task`/`load_skill`/`compact`，避免无限递归派生子 Agent、且不跑压缩管线
 - 使用独立的系统提示词 `SUB_SYSTEM`（要求"完成任务后给摘要，不要继续委派"）
 - 最多运行 30 轮，超过上限或没有明确结论时会退回一句兜底提示
-- 内部的工具调用仍然会触发全局 `PreToolUse`/`PostToolUse` 钩子（权限校验、日志等），只是不会触发 `UserPromptSubmit`/`Stop`
+- 内部的工具调用仍然会触发全局 `PreToolUse`/`PostToolUse` 钩子（权限校验、日志等），只是不会触发 `UserPromptSubmit`
 
 ### 技能加载（Skill Loading）
 
@@ -106,6 +123,7 @@ description: 一句话描述这个技能是做什么的
 | `todo_write` | 创建并管理当前会话的任务列表 |
 | `task` | 派生一个子 Agent 处理复杂子任务，仅返回最终结论 |
 | `load_skill` | 按名称加载某个技能的完整 `SKILL.md` 内容 |
+| `compact` | 摘要较早对话以释放上下文空间（没有独立 handler，由 `agentLoop` 特殊拦截处理） |
 
 `read_file`/`write_file`/`edit_file`/`glob` 都会先做路径校验（`utils/safePath.ts`），拒绝任何解析后跑出工作区目录的路径。
 
@@ -128,6 +146,10 @@ description: 一句话描述这个技能是做什么的
 
 `OPENAI_API_KEY`、`MODEL_ID` 缺失时，进程启动阶段会直接抛错退出。
 
+## 运行期生成的目录
+
+`.transcripts/`（压缩前的完整历史备份）和 `.task_outputs/tool-results/`（超大工具结果落盘）都是运行时按需生成的，已加入 `.gitignore`，不需要手动创建或清理。
+
 ## 项目结构
 
 ```
@@ -139,6 +161,7 @@ ccagent/
 │   ├── config.ts        # 环境变量加载、OpenAI 客户端、常量
 │   ├── systemPrompt.ts  # 拼装主 Agent 的 SYSTEM 提示词（含技能目录）
 │   ├── skills.ts        # 技能注册表：扫描 skills/ 目录、解析 frontmatter
+│   ├── compact.ts       # 四层上下文压缩管线 + 应急压缩
 │   ├── hooks/
 │   │   ├── index.ts             # 钩子注册表 + 四个 trigger 函数
 │   │   ├── contextInjectHook.ts # UserPromptSubmit：注入工作目录
@@ -160,6 +183,7 @@ ccagent/
 │       ├── todoWrite.ts  # todo_write 工具：维护会话任务列表
 │       ├── task.ts       # task 工具：派生子 Agent，独立消息历史
 │       ├── loadSkill.ts  # load_skill 工具：按名称加载完整技能内容
+│       ├── compact.ts    # compact 工具 schema（无 handler，agentLoop 里特殊处理）
 │       ├── baseTools.ts  # 子 Agent 可用的基础工具集合（不含 todo_write/task）
 │       ├── types.ts      # 工具处理函数的公共类型
 │       └── index.ts      # 工具注册表（TOOLS + TOOL_HANDLERS）
