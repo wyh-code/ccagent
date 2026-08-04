@@ -19,3 +19,7 @@ export function gray(text: string): string {
 export function green(text: string): string {
   return `\x1b[32m${text}\x1b[0m`;
 }
+
+export function magenta(text: string): string {
+  return `\x1b[35m${text}\x1b[0m`;
+}

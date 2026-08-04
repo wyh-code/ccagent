@@ -12,10 +12,11 @@ interface TodoItem {
 // 当前任务列表，模块级状态，仅保存在内存中，不做持久化
 let currentTodos: TodoItem[] = [];
 
-const STATUS_LABELS: Record<TodoStatus, string> = {
-  pending: yellow("等待中"),
-  in_progress: cyan("处理中"),
-  completed: green("已完成"),
+// 每种状态在任务列表里显示的图标：等待中留空、处理中用箭头、已完成用对勾
+const STATUS_ICONS: Record<TodoStatus, string> = {
+  pending: " ",
+  in_progress: cyan("▸"),
+  completed: green("✓"),
 };
 
 // 校验单个 todo 项的必填字段与状态取值，返回错误信息；校验通过返回 null
@@ -47,7 +48,7 @@ export async function runTodoWrite(args: Record<string, unknown>): Promise<strin
 
   const lines = [yellow("\n## 当前任务")];
   for (const todo of currentTodos) {
-    lines.push(`  [${STATUS_LABELS[todo.status]}] ${todo.content}`);
+    lines.push(`  [${STATUS_ICONS[todo.status]}] ${todo.content}`);
   }
   console.log(lines.join("\n"));
 

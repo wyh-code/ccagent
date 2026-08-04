@@ -19,21 +19,11 @@
 // 这就是核心循环：把工具执行结果回传给模型，直到模型决定停止。
 // 扩展逻辑（权限校验、日志、大输出告警、结束时的摘要）都不写死在这个循环里，
 // 而是挂到 hooks 模块暴露的几个事件上，循环本身保持干净。
-import type {
-  ChatCompletionMessage,
-  ChatCompletionMessageParam,
-} from "openai/resources/chat/completions";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { MODEL, SYSTEM, openai } from "./config.js";
 import { triggerPostToolUse, triggerPreToolUse, triggerStop } from "./hooks/index.js";
 import { TOOL_HANDLERS, TOOLS } from "./tools/index.js";
-
-// SDK 返回的消息对象里，没有内容的字段会显式给 null（比如纯工具调用时 content/refusal
-// 都是 null），直接塞进历史后续请求会把这些 null 字段原样带上；这里把它们过滤掉，
-// 只保留真正有值的字段再放进对话历史
-function toHistoryMessage(message: ChatCompletionMessage): ChatCompletionMessageParam {
-  const entries = Object.entries(message).filter(([, value]) => value !== null);
-  return Object.fromEntries(entries) as ChatCompletionMessageParam;
-}
+import { toHistoryMessage } from "./utils/history.js";
 
 // 距离上一次调用 todo_write 已经过去的轮数，达到阈值就催促模型更新任务列表
 let roundsSinceTodo = 0;

@@ -82,3 +82,16 @@
   - 帮我规划一下：先创建一个 hello.txt 文件写入 hello，再读取它，请先用 todo_write 列出这两步任务再执行（应该先看到任务清单按等待中/处理中/已完成变化打印，最后完成两步操作）
   - 连续问三个不需要用到 todo_write 的简单问题（比如依次问"你是谁""1+1 等于几""现在用的是什么模型"），第三次回答之后下一轮应该会看到历史里被插入催促更新 todo 列表的提醒
   - 直接问一句"你是谁"，确认不调用任何工具也能正常回答，不会被强行要求先规划
+
+## 0.6.0
+
+### 新增 task 工具，支持派生上下文隔离的子 Agent
+
+- 变更摘要：工具从 6 个扩到 7 个：新增 `tools/task.ts`，实现 `task` 工具——用一份全新的 `messages[]` 派生子 Agent，子 Agent 内部完整的多轮工具调用过程对父级不可见，只把最后一段摘要文本带回父级历史；子 Agent 最多运行 30 轮，用独立的 `SUB_SYSTEM` 提示词（"完成任务后给摘要，不要继续委派"），工具集限定为基础五个（`bash`/`read_file`/`write_file`/`edit_file`/`glob`），不含 `todo_write`/`task` 本身，防止递归派生；子 Agent 内部的工具调用仍会触发全局 `PreToolUse`/`PostToolUse` 钩子，但不触发 `UserPromptSubmit`/`Stop`。为了让 `task.ts` 和 `agent.ts` 都能复用同一份"基础五个工具"清单，新增 `tools/baseTools.ts`（`BASE_TOOLS`/`BASE_HANDLERS`）和 `tools/types.ts`（抽出原来在 `tools/index.ts` 里定义的 `ToolHandler` 类型），`tools/index.ts` 现在是把 `BASE_TOOLS`/`BASE_HANDLERS` 加上 `todo_write`/`task` 拼起来；同时把 `agent.ts` 里原本内联的 `toHistoryMessage()`（把 SDK 返回的消息对象转换成能塞进历史的对象，过滤掉值为 `null` 的字段）提取成 `utils/history.ts`，供 `agent.ts` 和 `task.ts` 共用，避免子 Agent 循环里重复实现一遍同样的转换逻辑。`config.ts` 的 `SYSTEM` 提示词加上"遇到复杂子问题时，使用 task 工具派生子 Agent"，并把原来"执行过程中及时更新状态"那半句去掉；新增 `SUB_SYSTEM` 常量。`tools/todoWrite.ts` 打印任务清单的图标从文字标签（等待中/处理中/已完成）改成符号（留空/青色 ▸/绿色 ✓）。`utils/colors.ts` 新增 `magenta()`，用于子 Agent 启动/完成的提示行。REPL 标题/提示符更新为 s06。
+- 验证步骤：
+  - 依次跑 `npm run typecheck`、`npm run lint`、`npm run build`，确认改动没有破坏类型/lint
+  - 用 `printf "q\n" | node dist/index.js` 模拟输入 q 直接退出，确认标题/提示符已更新为 s06，且立即退出、EOF 不挂起的行为不受影响
+- 试试这些 prompt：
+  - 请使用 task 工具派生一个子 Agent，让它创建一个名为 sub_hello.txt 的文件，内容为 hello from subagent，然后读取确认内容（应该看到 `[子 Agent 已启动]`、子 Agent 内部的工具调用日志、`[子 Agent 完成]`，最后父级只拿到一段摘要文本，父级历史里不会出现子 Agent 内部逐条的工具调用消息）
+  - 用 task 派生一个子 Agent 去数一下当前目录有多少个 .ts 文件，同时自己也创建一个 todo 列表规划这个任务（观察 todo_write 和 task 可以在同一轮对话里配合使用）
+  - 让子 Agent 尝试执行 sudo apt update（应该看到子 Agent 内部的工具调用同样被硬拒绝列表拦截，说明子 Agent 也受同一套权限钩子约束）

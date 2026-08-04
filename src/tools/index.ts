@@ -1,28 +1,17 @@
 // 工具注册表：把所有可用工具的 schema 与执行函数集中管理
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
-import { bashToolSchema, runBash } from "./bash.js";
-import { editFileToolSchema, runEdit } from "./editFile.js";
-import { globToolSchema, runGlob } from "./glob.js";
-import { readFileToolSchema, runRead } from "./readFile.js";
+import { BASE_HANDLERS, BASE_TOOLS } from "./baseTools.js";
+import { runTask, taskToolSchema } from "./task.js";
 import { runTodoWrite, todoWriteToolSchema } from "./todoWrite.js";
-import { runWrite, writeFileToolSchema } from "./writeFile.js";
+import type { ToolHandler } from "./types.js";
 
-export const TOOLS: ChatCompletionTool[] = [
-  bashToolSchema,
-  readFileToolSchema,
-  writeFileToolSchema,
-  editFileToolSchema,
-  globToolSchema,
-  todoWriteToolSchema,
-];
+export type { ToolHandler };
 
-export type ToolHandler = (args: Record<string, unknown>) => Promise<string>;
+// 完整工具集合：基础五个工具之外，再加上 todo_write 与 task（子 Agent 内部只用基础五个，见 baseTools.ts）
+export const TOOLS: ChatCompletionTool[] = [...BASE_TOOLS, todoWriteToolSchema, taskToolSchema];
 
 export const TOOL_HANDLERS: Record<string, ToolHandler> = {
-  bash: runBash,
-  read_file: runRead,
-  write_file: runWrite,
-  edit_file: runEdit,
-  glob: runGlob,
+  ...BASE_HANDLERS,
   todo_write: runTodoWrite,
+  task: runTask,
 };

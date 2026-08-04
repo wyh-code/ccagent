@@ -1,6 +1,6 @@
 # ccagent
 
-一个基于 TypeScript 实现的命令行编程 agent 工具：通过 OpenAI function-calling 驱动 `bash`/`read_file`/`write_file`/`edit_file`/`glob`/`todo_write` 六个工具，在交互式 REPL 中完成任务。
+一个基于 TypeScript 实现的命令行编程 agent 工具：通过 OpenAI function-calling 驱动 `bash`/`read_file`/`write_file`/`edit_file`/`glob`/`todo_write`/`task` 七个工具，在交互式 REPL 中完成任务，其中 `task` 可以派生出上下文隔离的子 Agent。
 
 ## 环境要求
 
@@ -42,10 +42,10 @@ ccagent
 启动后进入交互式 REPL：输入问题回车发送，模型会按需调用工具在当前工作目录下完成任务并把结果回传，直到给出最终回答。输入 `q`、`exit` 或空行退出；`Ctrl+C`/`Ctrl+D` 同样会安全退出。
 
 ```
-s05：TodoWrite — 先规划再执行，忘了就催
+s06：Subagent — 派生子 Agent，上下文隔离，仅返回摘要
 输入问题，回车发送。输入 q 退出。
 
-s05 >> 列出当前目录下的文件
+s06 >> 列出当前目录下的文件
 [HOOK] UserPromptSubmit：注入工作目录 /path/to/workdir
 [HOOK] bash(["ls -la"])
 ...
@@ -66,7 +66,16 @@ s05 >> 列出当前目录下的文件
 
 ### 任务规划（TodoWrite）
 
-`todo_write` 工具让模型维护一份当前会话的任务清单（内存态，不落盘），每次调用都会整体覆盖任务列表并按状态着色打印（等待中/处理中/已完成）。`agentLoop` 里有一个"距离上次更新任务列表已经过去几轮"的计数器：只要模型这一轮发起了工具调用，计数器就 +1；只要调用的是 `todo_write`，计数器清零。一旦计数达到 3 轮，下一轮开始前会往历史里插入一条 `<reminder>请更新你的 todo 列表。</reminder>` 的提醒消息，催促模型同步任务状态。
+`todo_write` 工具让模型维护一份当前会话的任务清单（内存态，不落盘），每次调用都会整体覆盖任务列表并按状态打印图标（等待中留空/处理中青色 ▸/已完成绿色 ✓）。`agentLoop` 里有一个"距离上次更新任务列表已经过去几轮"的计数器：只要模型这一轮发起了工具调用，计数器就 +1；只要调用的是 `todo_write`，计数器清零。一旦计数达到 3 轮，下一轮开始前会往历史里插入一条 `<reminder>请更新你的 todo 列表。</reminder>` 的提醒消息，催促模型同步任务状态。
+
+### 子 Agent（Subagent）
+
+`task` 工具用一份全新的消息历史派生出一个独立的子 Agent，实现上下文隔离：子 Agent 内部完整的工具调用过程（多轮模型请求、每一步的工具执行结果）都不会进入父级的对话历史，父级只拿到子 Agent最后给出的一段摘要文本作为这次 `task` 调用的结果。子 Agent：
+
+- 只能使用基础五个工具（`bash`/`read_file`/`write_file`/`edit_file`/`glob`，定义在 `tools/baseTools.ts`），不含 `todo_write` 和 `task` 本身，避免无限递归派生子 Agent
+- 使用独立的系统提示词 `SUB_SYSTEM`（要求"完成任务后给摘要，不要继续委派"）
+- 最多运行 30 轮，超过上限或没有明确结论时会退回一句兜底提示
+- 内部的工具调用仍然会触发全局 `PreToolUse`/`PostToolUse` 钩子（权限校验、日志等），只是不会触发 `UserPromptSubmit`/`Stop`
 
 ### 可用工具
 
@@ -78,6 +87,7 @@ s05 >> 列出当前目录下的文件
 | `edit_file` | 在文件中精确替换一段文本（仅替换一次） |
 | `glob` | 按 glob 模式在工作区目录下查找文件 |
 | `todo_write` | 创建并管理当前会话的任务列表 |
+| `task` | 派生一个子 Agent 处理复杂子任务，仅返回最终结论 |
 
 `read_file`/`write_file`/`edit_file`/`glob` 都会先做路径校验（`utils/safePath.ts`），拒绝任何解析后跑出工作区目录的路径。
 
@@ -119,7 +129,8 @@ ccagent/
 │   ├── utils/
 │   │   ├── colors.ts    # 终端高亮小工具
 │   │   ├── safePath.ts  # 路径安全校验，拒绝跑出工作区的路径
-│   │   └── stdin.ts     # 全进程共享的 readline 接口
+│   │   ├── stdin.ts     # 全进程共享的 readline 接口
+│   │   └── history.ts   # 把 SDK 消息对象转换成可放进历史的普通对象
 │   └── tools/
 │       ├── bash.ts       # bash 工具：超时、输出截断
 │       ├── readFile.ts   # read_file 工具
@@ -127,6 +138,9 @@ ccagent/
 │       ├── editFile.ts   # edit_file 工具
 │       ├── glob.ts       # glob 工具
 │       ├── todoWrite.ts  # todo_write 工具：维护会话任务列表
+│       ├── task.ts       # task 工具：派生子 Agent，独立消息历史
+│       ├── baseTools.ts  # 子 Agent 可用的基础工具集合（不含 todo_write/task）
+│       ├── types.ts      # 工具处理函数的公共类型
 │       └── index.ts      # 工具注册表（TOOLS + TOOL_HANDLERS）
 ├── dist/           # 构建产物（不入库）
 ├── tsconfig.json   # TypeScript 编译配置
