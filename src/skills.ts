@@ -3,6 +3,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TEXT_ENCODING, WORKDIR } from "./config.js";
+import { parseFrontmatter } from "./utils/frontmatter.js";
 
 export const SKILLS_DIR = join(WORKDIR, "skills");
 
@@ -14,45 +15,6 @@ interface Skill {
 
 // 技能名到技能信息的注册表，进程启动时扫描一次并填充
 export const SKILL_REGISTRY: Record<string, Skill> = {};
-
-// 按给定字符裁掉字符串开头和结尾连续出现的部分
-function stripChar(text: string, char: string): string {
-  let start = 0;
-  let end = text.length;
-  while (start < end && text[start] === char) {
-    start++;
-  }
-  while (end > start && text[end - 1] === char) {
-    end--;
-  }
-  return text.slice(start, end);
-}
-
-// 解析 SKILL.md 开头的 YAML frontmatter（用 --- 包裹），返回元信息和正文
-function parseFrontmatter(text: string): { meta: Record<string, string>; body: string } {
-  if (!text.startsWith("---")) {
-    return { meta: {}, body: text };
-  }
-  const firstMarker = text.indexOf("---");
-  const secondMarker = text.indexOf("---", firstMarker + 3);
-  if (secondMarker === -1) {
-    return { meta: {}, body: text };
-  }
-
-  const meta: Record<string, string> = {};
-  const frontmatterBlock = text.slice(firstMarker + 3, secondMarker).trim();
-  for (const line of frontmatterBlock.split("\n")) {
-    const colonIndex = line.indexOf(":");
-    if (colonIndex === -1) {
-      continue;
-    }
-    const key = line.slice(0, colonIndex).trim();
-    const rawValue = line.slice(colonIndex + 1).trim();
-    meta[key] = stripChar(stripChar(rawValue, '"'), "'");
-  }
-
-  return { meta, body: text.slice(secondMarker + 3).trim() };
-}
 
 // 扫描 skills/ 目录，把每个含 SKILL.md 的子目录注册进 SKILL_REGISTRY
 export function scanSkills(): void {

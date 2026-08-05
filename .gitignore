@@ -6,3 +6,4 @@ dist/
 coverage/
 .transcripts/
 .task_outputs/
+.memory/

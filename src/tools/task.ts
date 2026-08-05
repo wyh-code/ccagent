@@ -8,21 +8,11 @@ import { MODEL, SUB_SYSTEM, openai } from "../config.js";
 import { triggerPostToolUse, triggerPreToolUse } from "../hooks/index.js";
 import { gray, magenta } from "../utils/colors.js";
 import { toHistoryMessage } from "../utils/history.js";
+import { extractText } from "../utils/messageText.js";
 import { BASE_HANDLERS, BASE_TOOLS } from "./baseTools.js";
 
 // 子 Agent 单次任务最多运行的轮数，防止无限循环
 const MAX_ROUNDS = 30;
-
-// 从 assistant 消息的 content 字段中提取纯文本
-function extractText(content: unknown): string {
-  if (content === null || content === undefined) {
-    return "";
-  }
-  if (typeof content === "string") {
-    return content;
-  }
-  return String(content);
-}
 
 async function spawnSubagent(description: string): Promise<string> {
   console.log(magenta("\n[子 Agent 已启动]"));

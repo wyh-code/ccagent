@@ -1,6 +1,6 @@
 # ccagent
 
-一个基于 TypeScript 实现的命令行编程 agent 工具：通过 OpenAI function-calling 驱动 `bash`/`read_file`/`write_file`/`edit_file`/`glob`/`todo_write`/`task`/`load_skill`/`compact` 九个工具，在交互式 REPL 中完成任务，其中 `task` 可以派生出上下文隔离的子 Agent，`load_skill` 支持按需加载技能说明文档，`compact` 用于在对话过长时主动压缩历史。
+一个基于 TypeScript 实现的命令行编程 agent 工具：通过 OpenAI function-calling 驱动 `bash`/`read_file`/`write_file`/`edit_file`/`glob`/`todo_write`/`task`/`load_skill`/`compact` 九个工具，在交互式 REPL 中完成任务，其中 `task` 可以派生出上下文隔离的子 Agent，`load_skill` 支持按需加载技能说明文档，`compact` 用于在对话过长时主动压缩历史。此外还有一套跨会话持久化记忆机制（不是工具，是自动运行的背景逻辑）：把用户偏好、项目事实等知识沉淀成 Markdown 文件，下次启动也能记得。
 
 ## 环境要求
 
@@ -42,10 +42,10 @@ ccagent
 启动后进入交互式 REPL：输入问题回车发送，模型会按需调用工具在当前工作目录下完成任务并把结果回传，直到给出最终回答。输入 `q`、`exit` 或空行退出；`Ctrl+C`/`Ctrl+D` 同样会安全退出。
 
 ```
-s08：Context Compact — 四层压缩管线
+s09：Memory — 跨会话持久化知识
 输入问题，回车发送。输入 q 退出。
 
-s08 >> 列出当前目录下的文件
+s09 >> 列出当前目录下的文件
 [HOOK] UserPromptSubmit：注入工作目录 /path/to/workdir
 > bash
 [HOOK] bash(["ls -la"])
@@ -74,16 +74,15 @@ s08 >> 列出当前目录下的文件
 每次请求模型前，`agentLoop` 都会先跑一遍压缩管线（`src/compact.ts`），按"先便宜后昂贵"的顺序处理消息历史：
 
 1. **L1 预算控制**（`toolResultBudget`）：所有工具结果总长度超过 200,000 字符时，优先把最大的几条落盘到 `.task_outputs/tool-results/`，历史里只留路径和前 2000 字符预览。
-2. **L2 裁剪**（`snipCompact`）：消息条数超过 50 条时，只保留开头几条和结尾一段，中间替换成一条"[已裁剪 N 条消息]"提示。裁剪按"一次工具调用 + 它的响应"分组进行，保证不会把某条待响应的 `tool_calls` 消息和它的结果从中间切断——这一点和参考实现的朴素按下标切片不同，是移植时额外加固的（后面"已知取舍"一节详细说明原因）。
+2. **L2 裁剪**（`snipCompact`）：消息条数超过 50 条时，只保留开头几条和结尾一段，中间替换成一条"[已裁剪 N 条消息]"提示。裁剪按"一次工具调用 + 它的响应"分组进行，保证不会把某条待响应的 `tool_calls` 消息和它的结果从中间切断。
 3. **L3 占位替换**（`microCompact`）：超过 120 字符的较早工具结果（最近 3 条之外）替换成"[较早的工具结果已压缩]"占位符。
 4. **L4 整段摘要**（`compactHistory`）：以上都不够、历史序列化后仍超过 50,000 字符时，把完整历史落盘为 `.transcripts/` 下的一份 JSONL 转录备份，再请求模型对全部历史生成一段摘要，用这一条摘要消息整体替换掉原有历史。
 
 模型也可以主动调用 `compact` 工具触发一次 L4 摘要，用来主动释放上下文空间。如果请求模型时 API 直接报"上下文过长"类错误（`isContextTooLongError` 识别常见的几种错误关键词），会额外做一次应急压缩（`reactiveCompact`：摘要 + 保留最近几条原始消息，同样按分组取，不切断工具调用边界）并重试一次，仍然失败则把异常继续抛出。
 
-#### 已知取舍
+#### 设计说明
 
-- **只保留了"新增压缩机制"，没有跟进删掉已有的安全/摘要功能**：这一阶段的教学示例代码同时把 `permissionHook` 的破坏性命令确认、越界写入确认，以及 `Stop`/`summaryHook`、`todo_write` 催促提醒都简化掉了，只字未提这是本节要移除的内容——看起来只是教学示例为了突出"压缩"这一个新知识点做的减法。ccagent 是持续维护的项目，不会仅仅因为教学脚本在讲下一课时顺手做了简化，就跟着回退已经验证过的安全和摘要功能，所以这几处一仍其旧。
-- **`snipCompact`/`reactiveCompact` 做了分组感知加固**：按原始参考实现的朴素下标切片，在消息数刚好超过阈值、且切点落在某次工具调用和它的响应中间时，会产生一条没有对应工具结果的 `tool_calls`，下一次请求直接被 OpenAI 兼容接口拒绝（`400 ... insufficient tool messages following tool_calls`）——这在实测里用一个连续发起十几次工具调用的会话就能稳定复现，不是极端边界情况。按"工具调用 + 响应"分组后再裁剪/截取，避免了这个问题；代价是极端情况下（比如单次轮次里模型发起了几十个工具调用，一组就超过了预算）可能无法把消息数精确压到预算以内，但比直接崩溃更安全。
+`snipCompact`/`reactiveCompact` 按"工具调用 + 响应"分组后再裁剪/截取，而不是直接按下标做朴素切片：如果切点或截取范围落在某次工具调用（带 `tool_calls` 的 assistant 消息）和它的响应消息中间，会产生一条没有配对响应的 `tool_calls`，下一次请求会被 OpenAI 兼容接口以 `400`（`insufficient tool messages following tool_calls`）拒绝，导致进程崩溃退出。按分组处理保证任何裁剪/截取结果都不会破坏这个配对关系；代价是极端情况下（比如单次轮次里模型发起了几十个工具调用、一组本身就超过了预算）可能无法把消息数精确压到预算以内，但不会产生无效请求。
 
 ### 子 Agent（Subagent）
 
@@ -110,6 +109,24 @@ description: 一句话描述这个技能是做什么的
 
 技能的完整说明内容，只有被 load_skill 加载时才会进入对话。
 ```
+
+### 跨会话记忆（Memory）
+
+`src/memory.ts` 实现一套背景运行的持久化记忆机制，把值得长期记住的用户偏好、约束、项目事实沉淀成工作目录下 `.memory/` 里的 Markdown 文件，跨进程、跨会话都能读到：
+
+```
+.memory/
+  MEMORY.md          ← 索引：每条记忆一行「[名称](文件名) — 一行描述」
+  xiaoming.md         ← 单条记忆：YAML frontmatter（name/description/type）+ 正文
+  no-code-comments.md
+```
+
+- **索引常驻，正文按需**：`MEMORY.md` 索引内容会被 `buildSystemPrompt()` 拼进每一轮的 SYSTEM 提示词（只占很小的 token 开销），所以 `SYSTEM` 不再是启动时算一次的常量，而是 `agentLoop` 每轮都重新调用的函数——记忆索引会随对话推进变化，必须每轮都拿到最新的。
+- **按相关性注入正文**：每轮请求模型前，`loadMemories()` 会看最近几条用户消息，用一次轻量 LLM 调用从记忆目录里挑出明显相关的几条（挑选失败时退回关键词匹配），把选中记忆的完整正文包在 `<relevant_memories>` 标签里追加到这一轮的 SYSTEM 末尾。
+- **自动提取**：`agentLoop` 每轮真正结束（模型给出最终回答、不再调用工具）时，都会用一次 LLM 调用尝试从最近的对话内容里提取新记忆（用户说"记住"或表达出明确偏好时最容易触发），提取到就写文件、重建索引；如果没有新内容或已经被现有记忆覆盖，模型会返回空数组，什么也不写。模型自己也可以直接用 `write_file` 写 `.memory/` 下的文件，不受这条自动提取路径限制。
+- **定期整理**：记忆文件数达到 10 条时，`consolidateMemories()` 会把所有记忆内容打包丢给模型，让它合并重复项、删掉过时或矛盾的记忆，总数控制在 30 条以内，再整体重写。
+
+`.memory/` 会在进程启动时自动创建，已加入 `.gitignore`——记忆内容是运行时基于真实对话生成的用户数据，不是随代码库分发的示例内容。
 
 ### 可用工具
 
@@ -148,7 +165,7 @@ description: 一句话描述这个技能是做什么的
 
 ## 运行期生成的目录
 
-`.transcripts/`（压缩前的完整历史备份）和 `.task_outputs/tool-results/`（超大工具结果落盘）都是运行时按需生成的，已加入 `.gitignore`，不需要手动创建或清理。
+`.transcripts/`（压缩前的完整历史备份）、`.task_outputs/tool-results/`（超大工具结果落盘）、`.memory/`（跨会话记忆文件）都是运行时按需生成的，已加入 `.gitignore`，不需要手动创建或清理。
 
 ## 项目结构
 
@@ -159,9 +176,10 @@ ccagent/
 │   ├── repl.ts          # 交互式 REPL 循环
 │   ├── agent.ts         # agentLoop：核心 Agent 循环
 │   ├── config.ts        # 环境变量加载、OpenAI 客户端、常量
-│   ├── systemPrompt.ts  # 拼装主 Agent 的 SYSTEM 提示词（含技能目录）
+│   ├── systemPrompt.ts  # buildSystemPrompt()：每轮重新拼装 SYSTEM（技能目录 + 记忆索引）
 │   ├── skills.ts        # 技能注册表：扫描 skills/ 目录、解析 frontmatter
 │   ├── compact.ts       # 四层上下文压缩管线 + 应急压缩
+│   ├── memory.ts        # 跨会话记忆：读写 .memory/ 下的记忆文件、按相关性注入、自动提取/整理
 │   ├── hooks/
 │   │   ├── index.ts             # 钩子注册表 + 四个 trigger 函数
 │   │   ├── contextInjectHook.ts # UserPromptSubmit：注入工作目录
@@ -173,7 +191,9 @@ ccagent/
 │   │   ├── colors.ts    # 终端高亮小工具
 │   │   ├── safePath.ts  # 路径安全校验，拒绝跑出工作区的路径
 │   │   ├── stdin.ts     # 全进程共享的 readline 接口
-│   │   └── history.ts   # 把 SDK 消息对象转换成可放进历史的普通对象
+│   │   ├── history.ts   # 把 SDK 消息对象转换成可放进历史的普通对象
+│   │   ├── frontmatter.ts  # 解析 Markdown 文件的 YAML frontmatter（技能/记忆文件共用）
+│   │   └── messageText.ts  # 从消息 content 字段提取纯文本（子 Agent/记忆提取共用）
 │   └── tools/
 │       ├── bash.ts       # bash 工具：超时、输出截断
 │       ├── readFile.ts   # read_file 工具

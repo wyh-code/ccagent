@@ -32,10 +32,12 @@ import {
 } from "./compact.js";
 import { MODEL, openai } from "./config.js";
 import { triggerPostToolUse, triggerPreToolUse, triggerStop } from "./hooks/index.js";
-import { SYSTEM } from "./systemPrompt.js";
+import { consolidateMemories, extractMemories, loadMemories } from "./memory.js";
+import { buildSystemPrompt } from "./systemPrompt.js";
 import { TOOL_HANDLERS, TOOLS } from "./tools/index.js";
 import { cyan } from "./utils/colors.js";
 import { toHistoryMessage } from "./utils/history.js";
+import { messageText } from "./utils/messageText.js";
 
 // 历史序列化后超过这个字符数就触发一次整段摘要
 const CONTEXT_LIMIT = 50_000;
@@ -70,6 +72,20 @@ export async function agentLoop(messages: ChatCompletionMessageParam[]): Promise
       roundsSinceTodo = 0;
     }
 
+    // 系统提示词每轮都重新拼一次：记忆索引会随对话推进变化，不能只算一次存成常量
+    let system = buildSystemPrompt();
+    const memoriesContent = await loadMemories(messages);
+    if (memoriesContent) {
+      system += "\n\n" + memoriesContent;
+    }
+
+    // 压缩管线会修改/替换 messages，记忆提取要看的是压缩前的原始对话内容，
+    // 所以在压缩管线跑之前先拍一份快照留到本轮结束时用
+    const preCompress = messages.map((message) => ({
+      role: message.role,
+      content: messageText(message as { content?: unknown }),
+    }));
+
     // 压缩管线：先便宜后昂贵——预算控制、裁剪、占位替换都不够时才整段摘要
     replaceContents(messages, toolResultBudget(messages));
     replaceContents(messages, snipCompact(messages));
@@ -83,7 +99,7 @@ export async function agentLoop(messages: ChatCompletionMessageParam[]): Promise
     try {
       response = await openai.chat.completions.create({
         model: MODEL,
-        messages: [{ role: "system", content: SYSTEM }, ...messages],
+        messages: [{ role: "system", content: system }, ...messages],
         tools: TOOLS,
         max_tokens: 8000,
       });
@@ -113,6 +129,9 @@ export async function agentLoop(messages: ChatCompletionMessageParam[]): Promise
         messages.push({ role: "user", content: forced });
         continue;
       }
+      // 本轮真正结束时才提取新记忆、按需整理，压缩管线导致的中途重试不会触发
+      await extractMemories(preCompress);
+      await consolidateMemories();
       return;
     }
 

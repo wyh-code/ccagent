@@ -8,7 +8,7 @@ import { closeStdin, getStdin } from "./utils/stdin.js";
 const EXIT_COMMANDS = new Set(["q", "exit", ""]);
 
 export async function startRepl(): Promise<void> {
-  console.log("s08：Context Compact — 四层压缩管线");
+  console.log("s09：Memory — 跨会话持久化知识");
   console.log("输入问题，回车发送。输入 q 退出。\n");
 
   const rl = getStdin();
@@ -24,7 +24,7 @@ export async function startRepl(): Promise<void> {
   while (!interrupted) {
     let query: string;
     try {
-      query = await rl.question(cyan("s08 >> "));
+      query = await rl.question(cyan("s09 >> "));
     } catch {
       // 输入流关闭（如 Ctrl+D）时 question() 返回的 Promise 会被 reject
       break;
