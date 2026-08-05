@@ -140,3 +140,17 @@
   - 记住：我叫小明，以后每次生成代码都不要写注释（应该看到模型写入记忆相关文件，`.memory/` 下出现新的 `.md` 文件，`.memory/MEMORY.md` 索引也更新了）
   - 另起一个新的 REPL 进程（重新执行 `node dist/index.js`），问"你还记得我是谁吗？我们之前聊过我的偏好"（不重新告诉它也应该能答对，验证记忆确实跨会话持久化了）
   - 执行 sudo apt update（应该仍被硬拒绝列表直接拦截）；请使用 task 工具派生一个子 Agent，执行 sudo apt update（应该看到子 Agent 内部同样被拦截，验证子 Agent 的权限钩子没有被这次改动移除）
+
+## 0.10.0
+
+### SYSTEM 提示词改为按运行时上下文分段组装并缓存
+
+- 变更摘要：重写 `src/systemPrompt.ts`：新增 `PromptContext` 类型（`enabledTools`/`workspace`/`memories` 三个字段）；`updateContext()` 从当前真实状态派生一份上下文（`enabledTools` 取 `TOOL_HANDLERS` 的键、`workspace` 是工作目录、`memories` 是 `readMemoryIndex()` 的内容）；私有的 `buildSections(context)` 按主题拼出几段提示词——`identity`（编程 Agent 身份 + 直接行动指引）、`workspace`（工作目录）、`tools`（task/todo_write/compact 的使用指引）、`skills`（技能目录 + load_skill 指引）始终包含，`memory`（记忆索引 + 使用指引）只在 `context.memories` 非空时才加入；私有的 `assembleSystemPrompt(context)` 把选中的片段用两个换行拼起来；新增私有的 `stableStringify()`，把值的对象属性按 key 排序后再序列化，保证同样内容的上下文总能算出同一个字符串；导出的 `getSystemPrompt(context)` 用 `stableStringify(context)` 算缓存键，和上一次调用的键相同就直接返回缓存的提示词字符串（打印"[缓存命中] system prompt 未变化"），不同才重新拼装并打印这次实际包含哪些片段（比如"[已组装] 片段: identity, workspace, tools, skills, memory"）。`agent.ts` 里原来每轮都无条件调用的 `buildSystemPrompt()` 换成 `updateContext()` + `getSystemPrompt(context)`；由于 `enabledTools`/`workspace` 在一次进程运行期间恒定不变，真正会让缓存失效的只有记忆索引内容的变化，同一轮对话里的多次工具调用基本都会命中缓存。`loadMemories(messages)` 挑选相关记忆正文、追加到这一轮 system 文本末尾的逻辑不变，压缩管线、`roundsSinceTodo` 催促计数器、`extractMemories`/`consolidateMemories` 的调用时机也都保持不变。REPL 标题/提示符更新为 s10。
+- 本次改动只涉及 SYSTEM 提示词的组装方式，不影响其他功能：钩子系统、权限确认、任务规划、子 Agent、技能加载、上下文压缩、跨会话记忆的读写逻辑均未改动。
+- 验证步骤：
+  - 依次跑 `npm run typecheck`、`npm run lint`、`npm run build`，确认改动没有破坏类型/lint
+  - 用 `printf "q\n" | node dist/index.js` 模拟输入 q 直接退出，确认标题/提示符已更新为 s10，且立即退出、EOF 不挂起的行为不受影响
+- 试试这些 prompt：
+  - 请依次执行 echo 1、echo 2、echo 3 三条命令（第一次工具调用前应该看到一行"[已组装] 片段: ..."，后续几次工具调用前都应该看到"[缓存命中] system prompt 未变化"，因为这几轮之间没有任何东西改变过 SYSTEM 的内容）
+  - 记住：我的用户名是 tester（这一轮结束后会写入一条新记忆；下一轮再问任何问题，应该能看到"[已组装]"这一行里多了 memory，说明记忆索引变化让缓存失效、触发了重新拼装）
+  - 列出当前目录下的文件（回归验证基础工具调用、权限钩子日志、todo/task/compact/记忆等功能均不受这次改动影响）

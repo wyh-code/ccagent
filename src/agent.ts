@@ -33,7 +33,7 @@ import {
 import { MODEL, openai } from "./config.js";
 import { triggerPostToolUse, triggerPreToolUse, triggerStop } from "./hooks/index.js";
 import { consolidateMemories, extractMemories, loadMemories } from "./memory.js";
-import { buildSystemPrompt } from "./systemPrompt.js";
+import { getSystemPrompt, updateContext } from "./systemPrompt.js";
 import { TOOL_HANDLERS, TOOLS } from "./tools/index.js";
 import { cyan } from "./utils/colors.js";
 import { toHistoryMessage } from "./utils/history.js";
@@ -72,8 +72,9 @@ export async function agentLoop(messages: ChatCompletionMessageParam[]): Promise
       roundsSinceTodo = 0;
     }
 
-    // 系统提示词每轮都重新拼一次：记忆索引会随对话推进变化，不能只算一次存成常量
-    let system = buildSystemPrompt();
+    // 按当前运行时状态取（可能命中缓存的）系统提示词；记忆索引等内容变了才会重新拼装
+    const context = updateContext();
+    let system = getSystemPrompt(context);
     const memoriesContent = await loadMemories(messages);
     if (memoriesContent) {
       system += "\n\n" + memoriesContent;

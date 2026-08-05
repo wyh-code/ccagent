@@ -1,6 +1,6 @@
 # ccagent
 
-一个基于 TypeScript 实现的命令行编程 agent 工具：通过 OpenAI function-calling 驱动 `bash`/`read_file`/`write_file`/`edit_file`/`glob`/`todo_write`/`task`/`load_skill`/`compact` 九个工具，在交互式 REPL 中完成任务，其中 `task` 可以派生出上下文隔离的子 Agent，`load_skill` 支持按需加载技能说明文档，`compact` 用于在对话过长时主动压缩历史。此外还有一套跨会话持久化记忆机制（不是工具，是自动运行的背景逻辑）：把用户偏好、项目事实等知识沉淀成 Markdown 文件，下次启动也能记得。
+一个基于 TypeScript 实现的命令行编程 agent 工具：通过 OpenAI function-calling 驱动 `bash`/`read_file`/`write_file`/`edit_file`/`glob`/`todo_write`/`task`/`load_skill`/`compact` 九个工具，在交互式 REPL 中完成任务，其中 `task` 可以派生出上下文隔离的子 Agent，`load_skill` 支持按需加载技能说明文档，`compact` 用于在对话过长时主动压缩历史。此外还有一套跨会话持久化记忆机制（不是工具，是自动运行的背景逻辑）：把用户偏好、项目事实等知识沉淀成 Markdown 文件，下次启动也能记得；SYSTEM 提示词本身则是按运行时状态分段组装并做确定性缓存，而不是一整块写死的模板。
 
 ## 环境要求
 
@@ -42,15 +42,25 @@ ccagent
 启动后进入交互式 REPL：输入问题回车发送，模型会按需调用工具在当前工作目录下完成任务并把结果回传，直到给出最终回答。输入 `q`、`exit` 或空行退出；`Ctrl+C`/`Ctrl+D` 同样会安全退出。
 
 ```
-s09：Memory — 跨会话持久化知识
+s10：System Prompt — 运行时组装与缓存
 输入问题，回车发送。输入 q 退出。
 
-s09 >> 列出当前目录下的文件
+s10 >> 列出当前目录下的文件
 [HOOK] UserPromptSubmit：注入工作目录 /path/to/workdir
+  [已组装] 片段: identity, workspace, tools, skills
 > bash
 [HOOK] bash(["ls -la"])
 ...
 ```
+
+### SYSTEM 提示词组装与缓存
+
+`src/systemPrompt.ts` 把 SYSTEM 提示词拆成几个按主题命名的片段（`identity`/`workspace`/`tools`/`skills`，以及条件性的 `memory`），每轮请求模型前按当前运行时状态选择性拼接，而不是维护一整块写死的模板字符串：
+
+- `updateContext()` 从真实状态派生一份可判等比较的上下文：当前启用的工具名列表、工作目录、记忆索引内容（`readMemoryIndex()`）。
+- `getSystemPrompt(context)` 把 `context` 排序序列化成一个缓存键，和上一次的键相同就直接复用上一次拼好的字符串（打印"[缓存命中] system prompt 未变化"）；不同才重新拼装（打印"[已组装] 片段: ..."，列出这次实际包含的片段名）。`identity`/`workspace`/`tools`/`skills` 始终包含，`memory` 只在记忆索引确实有内容时才加入。
+
+因为 `enabledTools`/`workspace` 在一次进程运行期间不会变化，真正会让缓存失效、触发重新拼装的只有记忆索引内容变化（`extractMemories`/`consolidateMemories` 写入新记忆之后）——同一轮对话里的多次工具调用通常都会命中缓存，避免每次都重新拼一遍字符串；这个思路也对应到真实场景里，稳定的片段顺序有助于保住 API 一侧的 prompt 前缀缓存。
 
 ### 钩子系统
 
@@ -121,7 +131,7 @@ description: 一句话描述这个技能是做什么的
   no-code-comments.md
 ```
 
-- **索引常驻，正文按需**：`MEMORY.md` 索引内容会被 `buildSystemPrompt()` 拼进每一轮的 SYSTEM 提示词（只占很小的 token 开销），所以 `SYSTEM` 不再是启动时算一次的常量，而是 `agentLoop` 每轮都重新调用的函数——记忆索引会随对话推进变化，必须每轮都拿到最新的。
+- **索引常驻，正文按需**：`MEMORY.md` 索引内容会作为 `memory` 片段拼进每一轮的 SYSTEM 提示词（只占很小的 token 开销，见上文"SYSTEM 提示词组装与缓存"）；索引内容变化时才会触发重新拼装，其余情况下直接复用缓存结果。
 - **按相关性注入正文**：每轮请求模型前，`loadMemories()` 会看最近几条用户消息，用一次轻量 LLM 调用从记忆目录里挑出明显相关的几条（挑选失败时退回关键词匹配），把选中记忆的完整正文包在 `<relevant_memories>` 标签里追加到这一轮的 SYSTEM 末尾。
 - **自动提取**：`agentLoop` 每轮真正结束（模型给出最终回答、不再调用工具）时，都会用一次 LLM 调用尝试从最近的对话内容里提取新记忆（用户说"记住"或表达出明确偏好时最容易触发），提取到就写文件、重建索引；如果没有新内容或已经被现有记忆覆盖，模型会返回空数组，什么也不写。模型自己也可以直接用 `write_file` 写 `.memory/` 下的文件，不受这条自动提取路径限制。
 - **定期整理**：记忆文件数达到 10 条时，`consolidateMemories()` 会把所有记忆内容打包丢给模型，让它合并重复项、删掉过时或矛盾的记忆，总数控制在 30 条以内，再整体重写。
@@ -176,7 +186,7 @@ ccagent/
 │   ├── repl.ts          # 交互式 REPL 循环
 │   ├── agent.ts         # agentLoop：核心 Agent 循环
 │   ├── config.ts        # 环境变量加载、OpenAI 客户端、常量
-│   ├── systemPrompt.ts  # buildSystemPrompt()：每轮重新拼装 SYSTEM（技能目录 + 记忆索引）
+│   ├── systemPrompt.ts  # updateContext()/getSystemPrompt()：按运行时上下文分段组装并缓存 SYSTEM
 │   ├── skills.ts        # 技能注册表：扫描 skills/ 目录、解析 frontmatter
 │   ├── compact.ts       # 四层上下文压缩管线 + 应急压缩
 │   ├── memory.ts        # 跨会话记忆：读写 .memory/ 下的记忆文件、按相关性注入、自动提取/整理
